@@ -6,7 +6,12 @@ Site público e central de gestão das unidades da RGR no Artem (Jardim Anália 
 - **Central** (`/central`): painel do dia, calendário das unidades, reservas, portaria, limpeza, manutenção, financeiro, equipe e configurações. Funciona no celular e pode ser instalada como aplicativo (menu do navegador › Adicionar à tela inicial).
 - **Guia do hóspede** (`/guia/<código>`): uma página por unidade, em português e inglês, com o Wi-Fi daquela unidade.
 - **Sincronização iCal**: a cada 30 minutos lê o calendário do Airbnb e do Booking de cada unidade, cria as reservas, cancela as que sumiram e gera a escala de limpeza.
-- **API para o agente de IA** (`/api/agent/...`): o n8n consulta hóspedes e o dia, e abre ocorrências.
+- **Mensagens automáticas**: seis mensagens por estadia (confirmação, boas-vindas, senha, primeira manhã, saída, pedido de avaliação), com modelos editáveis. Saem sozinhas pelo WhatsApp da central (Evolution API) ou ficam numa fila para envio com um toque. Mensagem com dado faltando nunca sai incompleta.
+- **Preço sugerido**: diária por dia pelos próximos 60 dias, a partir da ocupação do prédio, da antecedência, do fim de semana e de eventos cadastrados.
+- **Avaliações**: registro, nota média, alerta de notas baixas e resposta sugerida pela IA.
+- **Resumo do dia com IA** no painel.
+- **Disponibilidade no site**: o formulário mostra quantos studios estão livres nas datas escolhidas.
+- **API para o agente de IA** (`/api/agent/...`): o n8n consulta hóspedes e o dia, abre ocorrências e completa reservas a partir dos e-mails de confirmação.
 
 ## Perfis de acesso
 
@@ -36,7 +41,12 @@ Site público e central de gestão das unidades da RGR no Artem (Jardim Anália 
    SITE_URL=https://artem.rgr-ia.com
    AGENT_API_KEY=<resultado de: openssl rand -hex 24>
    ICAL_SYNC_MINUTES=30
+   AI_API_KEY=<a mesma chave do Groq do agente de WhatsApp>
+   EVOLUTION_URL=<endereço da sua Evolution API, ex.: https://evo.rgr-ia.com>
+   EVOLUTION_API_KEY=<apikey da Evolution>
+   EVOLUTION_INSTANCE=<nome da instância do número da central>
    ```
+   As três variáveis da Evolution e a de IA são opcionais: sem elas, as mensagens ficam na fila manual e os botões de IA não aparecem.
 5. **Domains**: adicione `artem.rgr-ia.com`, porta `3000`, HTTPS ligado.
 6. **Deploy**. Na primeira subida o sistema cria as tabelas, as 20 unidades (U01 a U20) e o seu usuário de gestor.
 
@@ -65,10 +75,12 @@ Todas as chamadas levam o cabeçalho `Authorization: Bearer <AGENT_API_KEY>`.
 | `GET /api/agent/hoje` | entradas, saídas, limpezas e ocorrências do dia (aceita `?data=AAAA-MM-DD`) |
 | `GET /api/agent/hospede?telefone=11999998888` | estadia atual ou próxima do hóspede: unidade, datas, guia e, a partir da véspera, o Wi-Fi |
 | `POST /api/agent/ocorrencia` | abre ocorrência. Corpo: `{"unidade":"U05","titulo":"Chuveiro sem água quente","prioridade":"p2"}` |
+| `POST /api/agent/reserva` | completa uma reserva. Corpo: `{"codigo":"HMXXXXXXXX","hospede":"Nome","telefone":"+55 11 9…","pessoas":2,"valor":870,"taxa_limpeza":90}`. Procura pelo código do Airbnb (que vem no iCal) ou por `unidade` + `entrada` + `saida` |
 
 Sugestões de fluxo no n8n:
 - **Hóspede no WhatsApp** › `hospede?telefone=` › o modelo responde com os dados certos; se for defeito, `POST ocorrencia` e avisa a governança.
 - **Resumo das 8h** › `hoje` › o modelo escreve o resumo e envia para o seu WhatsApp.
+- **E-mail de confirmação do Airbnb/Booking** (gatilho do Gmail) › o modelo extrai código, nome, telefone, pessoas e valor › `POST reserva`. É o que substitui a API oficial: a reserva entra pelo iCal e os dados do hóspede chegam pelo e-mail, sem digitação.
 
 Para o agente encontrar o hóspede, o telefone precisa estar na reserva (campo WhatsApp).
 

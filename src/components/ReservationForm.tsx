@@ -86,7 +86,7 @@ export function ReservationForm({ units, r, defaults }: { units: Unit[]; r: Res;
         </div>
       </div>
 
-      <div className="grid-3">
+      <div className="grid-3" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))" }}>
         {!ical && (
           <div className="field">
             <label htmlFor="kind">Tipo</label>
@@ -105,6 +105,14 @@ export function ReservationForm({ units, r, defaults }: { units: Unit[]; r: Res;
             </select>
           </div>
         )}
+        <div className="field">
+          <label htmlFor="door_code">Senha da porta</label>
+          <input id="door_code" name="door_code" defaultValue={r?.door_code ?? ""} placeholder="Gerada no app da fechadura" autoComplete="off" />
+        </div>
+        <div className="field">
+          <label htmlFor="confirmation_code">Código da reserva</label>
+          <input id="confirmation_code" name="confirmation_code" defaultValue={r?.confirmation_code ?? ""} placeholder="Ex.: HMXXXXXXXX" />
+        </div>
         <div className="field">
           <label htmlFor="rating">Nota da avaliação</label>
           <input id="rating" name="rating" inputMode="decimal" defaultValue={r?.rating != null ? String(r.rating).replace(".", ",") : ""} placeholder="1 a 5" />

@@ -16,6 +16,9 @@ export type ModuleKey =
   | "manutencao"
   | "financeiro"
   | "contatos"
+  | "mensagens"
+  | "avaliacoes"
+  | "precos"
   | "unidades"
   | "equipe"
   | "configuracoes";
@@ -27,7 +30,10 @@ export const MODULES: { key: ModuleKey; label: string; href: string; roles: Role
   { key: "manutencao", label: "Manutenção", href: "/central/manutencao", roles: ["admin", "atendimento", "governanca", "camareira"], group: "Hoje" },
   { key: "reservas", label: "Reservas", href: "/central/reservas", roles: ["admin", "atendimento"], group: "Hóspedes" },
   { key: "portaria", label: "Portaria", href: "/central/portaria", roles: ["admin", "atendimento", "governanca"], group: "Hóspedes" },
+  { key: "mensagens", label: "Mensagens", href: "/central/mensagens", roles: ["admin", "atendimento"], group: "Hóspedes" },
+  { key: "avaliacoes", label: "Avaliações", href: "/central/avaliacoes", roles: ["admin", "atendimento"], group: "Hóspedes" },
   { key: "contatos", label: "Contatos do site", href: "/central/contatos", roles: ["admin", "atendimento"], group: "Hóspedes" },
+  { key: "precos", label: "Preços", href: "/central/precos", roles: ["admin"], group: "Gestão" },
   { key: "financeiro", label: "Financeiro", href: "/central/financeiro", roles: ["admin"], group: "Gestão" },
   { key: "unidades", label: "Unidades", href: "/central/unidades", roles: ["admin", "governanca"], group: "Gestão" },
   { key: "equipe", label: "Equipe", href: "/central/equipe", roles: ["admin"], group: "Gestão" },

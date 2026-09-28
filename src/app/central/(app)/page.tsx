@@ -3,14 +3,17 @@ import { requireUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { monthResults } from "@/lib/metrics";
 import { addDays, fmtDateTime, fmtShort, getSettings, money, monthLabel, pct, today } from "@/lib/util";
-import { Channel, CleaningPill, PriorityPill, UnitCode } from "@/components/ui";
+import { Channel, CleaningPill, Flash, PriorityPill, UnitCode } from "@/components/ui";
+import { aiReady } from "@/lib/ai";
+import { aiDailySummary } from "../actions";
 
 function greeting() {
   const h = Number(new Intl.DateTimeFormat("en-US", { timeZone: "America/Sao_Paulo", hour: "numeric", hour12: false }).format(new Date()));
   return h < 12 ? "Bom dia" : h < 18 ? "Boa tarde" : "Boa noite";
 }
 
-export default async function Painel() {
+export default async function Painel({ searchParams }: { searchParams: Promise<{ ok?: string; erro?: string }> }) {
+  const sp = await searchParams;
   const user = await requireUser("painel");
   const sql = db();
   const d = today();
@@ -30,6 +33,12 @@ export default async function Painel() {
         FROM reservations WHERE kind = 'reserva' AND status = 'confirmada' AND check_in < ${addDays(d, 30)}::date AND check_out > ${d}::date`,
     sql`SELECT max(ran_at) AS last, bool_and(ok) FILTER (WHERE ran_at > now() - interval '2 hours') AS ok FROM sync_log`,
   ]);
+  const [msgs] = await sql`SELECT count(*) FILTER (WHERE status IN ('manual','falhou'))::int AS pending FROM message_log`;
+  let summary: { at: string; text: string } | null = null;
+  try {
+    summary = settings.ai_summary ? JSON.parse(settings.ai_summary) : null;
+  } catch {}
+  const summaryToday = summary && summary.at.slice(0, 10) === new Date().toISOString().slice(0, 10) ? summary : null;
 
   const t = m.totals;
   const goal = Number(settings.occupancy_goal || 0.7);
@@ -50,6 +59,22 @@ export default async function Painel() {
           <Link className="btn btn-primary" href="/central/reservas/nova">Nova reserva</Link>
         </div>
       </div>
+
+      <Flash sp={sp} />
+      {(aiReady() || msgs.pending > 0) && (
+        <section className="panel">
+          <div className="panel-head">
+            <h2>{summaryToday ? `Resumo do dia · ${fmtDateTime(summaryToday.at)}` : "Resumo do dia"}</h2>
+            <div className="actions">
+              {msgs.pending > 0 && <Link className="btn btn-small" href="/central/mensagens">{msgs.pending} mensagens para enviar</Link>}
+              {aiReady() && user.role === "admin" && (
+                <form action={aiDailySummary}><button className="btn btn-small" type="submit">{summaryToday ? "Atualizar com IA" : "Gerar com IA"}</button></form>
+              )}
+            </div>
+          </div>
+          {summaryToday && <div className="panel-body" style={{ whiteSpace: "pre-wrap", fontSize: 14.5 }}>{summaryToday.text}</div>}
+        </section>
+      )}
 
       <section className="kpis" aria-label={`Indicadores de ${monthLabel(d)}`}>
         <div className="kpi">

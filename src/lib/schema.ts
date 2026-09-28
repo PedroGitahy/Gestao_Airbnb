@@ -144,6 +144,93 @@ CREATE TABLE sync_log (
 CREATE INDEX sync_log_ran ON sync_log(ran_at DESC);
 `,
   },
+  {
+    version: 2,
+    sql: `
+ALTER TABLE reservations ADD COLUMN confirmation_code text;
+ALTER TABLE reservations ADD COLUMN door_code text;
+CREATE INDEX reservations_code ON reservations(confirmation_code);
+
+ALTER TABLE units ADD COLUMN base_price numeric(10,2);
+ALTER TABLE units ADD COLUMN min_price numeric(10,2);
+
+CREATE TABLE message_templates (
+  id serial PRIMARY KEY,
+  name text NOT NULL,
+  trigger text NOT NULL CHECK (trigger IN ('reserva','antes_entrada','entrada','durante','saida','apos_saida')),
+  offset_days int NOT NULL DEFAULT 0,
+  send_time text NOT NULL DEFAULT '10:00',
+  body text NOT NULL,
+  active boolean NOT NULL DEFAULT true,
+  sort int NOT NULL DEFAULT 0
+);
+
+CREATE TABLE message_log (
+  id serial PRIMARY KEY,
+  reservation_id int NOT NULL REFERENCES reservations(id) ON DELETE CASCADE,
+  template_id int NOT NULL REFERENCES message_templates(id) ON DELETE CASCADE,
+  scheduled_for timestamptz NOT NULL,
+  status text NOT NULL DEFAULT 'agendada' CHECK (status IN ('agendada','enviada','manual','falhou','ignorada')),
+  body text,
+  note text,
+  sent_at timestamptz,
+  sent_by int REFERENCES users(id),
+  UNIQUE (reservation_id, template_id)
+);
+CREATE INDEX message_log_sched ON message_log(status, scheduled_for);
+
+CREATE TABLE reviews (
+  id serial PRIMARY KEY,
+  reservation_id int REFERENCES reservations(id) ON DELETE SET NULL,
+  unit_id int REFERENCES units(id),
+  channel text NOT NULL DEFAULT 'airbnb',
+  guest_name text,
+  rating numeric(2,1),
+  text text NOT NULL,
+  response text,
+  responded boolean NOT NULL DEFAULT false,
+  review_date date NOT NULL DEFAULT CURRENT_DATE,
+  created_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE price_events (
+  id serial PRIMARY KEY,
+  name text NOT NULL,
+  date_from date NOT NULL,
+  date_to date NOT NULL,
+  factor numeric(4,2) NOT NULL DEFAULT 1.2,
+  CHECK (date_to >= date_from)
+);
+`,
+  },
+];
+
+
+const DEFAULT_TEMPLATES = [
+  {
+    sort: 1, name: "Reserva confirmada", trigger: "reserva", offset: 0, time: "00:00",
+    body: "Olá, {nome}. Sua estadia no Artem de {entrada} a {saida} está confirmada.\n\nTrês dias antes da chegada envio o guia do apartamento, e na véspera, a senha de acesso. Se precisar de algo até lá, é só responder por aqui.\n\nEquipe RGR",
+  },
+  {
+    sort: 2, name: "Boas-vindas", trigger: "antes_entrada", offset: 3, time: "10:00",
+    body: "Olá, {nome}. Faltam três dias para a sua chegada.\n\nNeste link está tudo sobre o apartamento e o bairro: {guia}\n\nO check-in é a partir das {checkin} e é feito sem chaves, por senha. Você já sabe o horário aproximado em que chega?\n\nEquipe RGR",
+  },
+  {
+    sort: 3, name: "Senha e chegada", trigger: "antes_entrada", offset: 1, time: "10:00",
+    body: "Olá, {nome}. Está tudo pronto para amanhã.\n\nEndereço: Rua Antônio Alves Barril, 177 · Jardim Anália Franco\nPortaria: informe seu nome e o apartamento {apto}.\nAndar: {andar}\nSenha da porta: {senha_porta}, válida a partir das {checkin}.\nWi-Fi: {wifi_rede} · senha {wifi_senha}\n\nGuia completo: {guia}\n\nEquipe RGR",
+  },
+  {
+    sort: 4, name: "Primeira manhã", trigger: "durante", offset: 1, time: "10:00",
+    body: "Bom dia, {nome}. Como foi a primeira noite? Se precisar de toalhas extras, travesseiro ou alguma indicação no bairro, estou por aqui.",
+  },
+  {
+    sort: 5, name: "Lembrete de saída", trigger: "saida", offset: 0, time: "08:00",
+    body: "Bom dia, {nome}. Hoje é dia de check-out, até as {checkout}.\n\nAntes de sair, só pedimos três coisas: desligar o ar-condicionado, deixar o lixo no cesto da cozinha e fechar bem a porta. Toalhas e roupa de cama podem ficar onde estão.\n\nFoi um prazer receber você.",
+  },
+  {
+    sort: 6, name: "Pedido de avaliação", trigger: "apos_saida", offset: 1, time: "11:00",
+    body: "{nome}, obrigado por ficar com a gente. Se tiver um minuto, sua avaliação ajuda muito outros viajantes a nos conhecerem. E se algo poderia ter sido melhor, prefiro ouvir diretamente de você.\n\nQuando voltar a São Paulo, será bom receber você de novo.",
+  },
 ];
 
 const DEFAULT_SETTINGS: Record<string, string> = {
@@ -161,6 +248,11 @@ const DEFAULT_SETTINGS: Record<string, string> = {
   occupancy_goal: "0.70",
   rating_goal: "4.8",
   trash_location: "",
+  auto_messages: "off",
+  default_price: "250",
+  default_min_price: "160",
+  weekend_factor: "1.00",
+  weekday_factor: "1.00",
 };
 
 let ready: Promise<void> | null = null;
@@ -206,6 +298,20 @@ async function run() {
         const code = `U${String(i).padStart(2, "0")}`;
         await tx`INSERT INTO units (code, guide_token, ical_token) VALUES (${code}, ${token()}, ${token()})`;
       }
+    }
+
+
+    const [{ mt }] = await tx`SELECT count(*)::int AS mt FROM message_templates`;
+    if (mt === 0) {
+      for (const t of DEFAULT_TEMPLATES) {
+        await tx`INSERT INTO message_templates (name, trigger, offset_days, send_time, body, sort) VALUES (${t.name}, ${t.trigger}, ${t.offset}, ${t.time}, ${t.body}, ${t.sort})`;
+      }
+    }
+    const [{ pe }] = await tx`SELECT count(*)::int AS pe FROM price_events`;
+    if (pe === 0) {
+      await tx`INSERT INTO price_events (name, date_from, date_to, factor) VALUES
+        ('Réveillon', '2026-12-29', '2027-01-01', 1.40),
+        ('Carnaval', '2027-02-05', '2027-02-09', 1.25)`;
     }
 
     const [{ u }] = await tx`SELECT count(*)::int AS u FROM users`;

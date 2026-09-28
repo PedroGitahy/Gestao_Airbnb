@@ -2,6 +2,7 @@ import { db } from "@/lib/db";
 import { ensureDatabase } from "@/lib/schema";
 import { getSettings } from "@/lib/util";
 import { createLead } from "./actions";
+import { AvailabilityDates } from "./AvailabilityDates";
 
 export const dynamic = "force-dynamic";
 
@@ -182,11 +183,7 @@ export default async function Home({ searchParams }: { searchParams: Promise<{ e
               <div className="field"><label htmlFor="l-phone">WhatsApp</label><input id="l-phone" name="phone" autoComplete="tel" inputMode="tel" /></div>
               <div className="field"><label htmlFor="l-email">E-mail</label><input id="l-email" name="email" type="email" autoComplete="email" /></div>
             </div>
-            <div className="grid-3">
-              <div className="field"><label htmlFor="l-in">Entrada</label><input id="l-in" name="check_in" type="date" /></div>
-              <div className="field"><label htmlFor="l-out">Saída</label><input id="l-out" name="check_out" type="date" /></div>
-              <div className="field"><label htmlFor="l-guests">Pessoas</label><input id="l-guests" name="guests" inputMode="numeric" /></div>
-            </div>
+            <AvailabilityDates />
             <div className="field">
               <label htmlFor="l-reason">Motivo da viagem</label>
               <select id="l-reason" name="reason" defaultValue="">

@@ -73,21 +73,24 @@ export async function syncUnitChannel(unitId: number, channel: "airbnb" | "booki
       seen.push(ev.uid);
       const kind = classify(channel, ev);
       const link = ev.description.match(/https?:\/\/\S+/)?.[0] ?? null;
+      const code = link?.match(/details\/([A-Z0-9]{6,})/i)?.[1]?.toUpperCase() ?? null;
       await sql`
-        INSERT INTO reservations (unit_id, channel, kind, external_uid, source, check_in, check_out, external_url, platform_fee_pct)
-        VALUES (${unitId}, ${channel}, ${kind}, ${ev.uid}, 'ical', ${ev.start}, ${ev.end}, ${link},
+        INSERT INTO reservations (unit_id, channel, kind, external_uid, source, check_in, check_out, external_url, confirmation_code, platform_fee_pct)
+        VALUES (${unitId}, ${channel}, ${kind}, ${ev.uid}, 'ical', ${ev.start}, ${ev.end}, ${link}, ${code},
           (SELECT value::numeric FROM settings WHERE key = ${channel + "_fee"}))
         ON CONFLICT (unit_id, channel, external_uid) WHERE external_uid IS NOT NULL DO UPDATE
           SET check_in = EXCLUDED.check_in,
               check_out = EXCLUDED.check_out,
               kind = EXCLUDED.kind,
               external_url = COALESCE(EXCLUDED.external_url, reservations.external_url),
+              confirmation_code = COALESCE(EXCLUDED.confirmation_code, reservations.confirmation_code),
               status = 'confirmada',
               updated_at = now()
           WHERE reservations.check_in <> EXCLUDED.check_in
              OR reservations.check_out <> EXCLUDED.check_out
              OR reservations.kind <> EXCLUDED.kind
-             OR reservations.status <> 'confirmada'`;
+             OR reservations.status <> 'confirmada'
+             OR (EXCLUDED.confirmation_code IS NOT NULL AND reservations.confirmation_code IS DISTINCT FROM EXCLUDED.confirmation_code)`;
     }
     // sumiu do calendário e ainda não começou: foi cancelada na plataforma
     await sql`

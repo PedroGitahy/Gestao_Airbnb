@@ -6,7 +6,10 @@ import { db } from "@/lib/db";
 import { requireUser, hashPassword } from "@/lib/auth";
 import { regenerateCleanings } from "@/lib/cleanings";
 import { syncAll } from "@/lib/ical";
-import { EXPENSE_CATEGORIES, PRIORITY, num, str } from "@/lib/util";
+import { planMessages, processDueMessages } from "@/lib/messages";
+import { ask, aiReady, VOICE } from "@/lib/ai";
+import { monthResults } from "@/lib/metrics";
+import { EXPENSE_CATEGORIES, PRIORITY, fmtShort, num, str, today } from "@/lib/util";
 import type { Role } from "@/lib/roles";
 
 const back = (path: string, msg: string, kind: "ok" | "erro" = "ok") =>
@@ -42,6 +45,8 @@ export async function saveReservation(fd: FormData) {
     status: str(fd.get("status")) ?? "confirmada",
     rating: num(fd.get("rating")),
     notes: str(fd.get("notes")),
+    door_code: str(fd.get("door_code")),
+    confirmation_code: str(fd.get("confirmation_code"))?.toUpperCase() ?? null,
   };
 
   // conflito de datas com outra reserva confirmada na mesma unidade
@@ -66,6 +71,7 @@ export async function saveReservation(fd: FormData) {
     rid = r.id;
   }
   await regenerateCleanings();
+  await planMessages();
   revalidatePath("/central", "layout");
   back(`/central/reservas/${rid}`, "Reserva salva.");
 }
@@ -249,7 +255,7 @@ export async function updateUserAction(fd: FormData) {
 
 /* ——— Configurações ——— */
 
-const SETTING_KEYS = ["company_name", "airbnb_fee", "booking_fee", "airbnb_url", "booking_url", "whatsapp_central", "phone_portaria", "phone_plantao", "email_contato", "checkin_time", "checkout_time", "occupancy_goal", "rating_goal", "trash_location"];
+const SETTING_KEYS = ["auto_messages", "default_price", "default_min_price", "weekend_factor", "weekday_factor", "company_name", "airbnb_fee", "booking_fee", "airbnb_url", "booking_url", "whatsapp_central", "phone_portaria", "phone_plantao", "email_contato", "checkin_time", "checkout_time", "occupancy_goal", "rating_goal", "trash_location"];
 
 export async function saveSettings(fd: FormData) {
   await requireUser("configuracoes");
@@ -261,6 +267,8 @@ export async function saveSettings(fd: FormData) {
       v = n === null ? "0" : String(n > 1 ? n / 100 : n);
     }
     if (k === "rating_goal") v = String(num(v) ?? 4.8);
+    if (["default_price", "default_min_price", "weekend_factor", "weekday_factor"].includes(k)) v = String(num(v) ?? (k.endsWith("factor") ? 1 : 0));
+    if (k === "auto_messages") v = fd.get(k) === "on" ? "on" : "off";
     await sql`INSERT INTO settings (key, value) VALUES (${k}, ${v}) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
   }
   revalidatePath("/", "layout");
@@ -275,4 +283,165 @@ export async function setLeadStatus(fd: FormData) {
   if (!["novo", "respondido", "fechado", "perdido"].includes(status ?? "")) return;
   await db()`UPDATE leads SET status = ${status} WHERE id = ${num(fd.get("id"))}`;
   revalidatePath("/central", "layout");
+}
+
+
+/* ——— Mensagens ——— */
+
+export async function setMessageStatus(fd: FormData) {
+  const u = await requireUser("mensagens");
+  const id = num(fd.get("id"));
+  const status = str(fd.get("status"));
+  const sql = db();
+  if (status === "enviada") await sql`UPDATE message_log SET status = 'enviada', sent_at = now(), sent_by = ${u.id}, note = 'Enviada manualmente' WHERE id = ${id}`;
+  else if (status === "ignorada") await sql`UPDATE message_log SET status = 'ignorada', sent_by = ${u.id} WHERE id = ${id}`;
+  else if (status === "reenviar") await sql`UPDATE message_log SET status = 'agendada', scheduled_for = now(), note = null WHERE id = ${id}`;
+  revalidatePath("/central", "layout");
+}
+
+export async function runMessagesNow() {
+  await requireUser("mensagens");
+  await planMessages();
+  const n = await processDueMessages();
+  revalidatePath("/central", "layout");
+  back("/central/mensagens", n ? `${n} mensagens processadas.` : "Nenhuma mensagem vencida agora.");
+}
+
+export async function saveTemplate(fd: FormData) {
+  await requireUser("configuracoes");
+  const id = num(fd.get("id"));
+  const trigger = str(fd.get("trigger")) ?? "antes_entrada";
+  const time = /^\d{2}:\d{2}$/.test(str(fd.get("send_time")) ?? "") ? str(fd.get("send_time"))! : "10:00";
+  const data = {
+    name: str(fd.get("name")) ?? "Mensagem",
+    trigger,
+    offset_days: Math.max(0, Math.min(60, num(fd.get("offset_days")) ?? 0)),
+    send_time: time,
+    body: str(fd.get("body")) ?? "",
+    active: fd.get("active") === "on",
+  };
+  if (!data.body) back("/central/mensagens?v=modelos", "O texto da mensagem não pode ficar vazio.", "erro");
+  const sql = db();
+  if (id) {
+    await sql`UPDATE message_templates SET ${sql(data)} WHERE id = ${id}`;
+    // reagenda o que ainda não saiu
+    await sql`DELETE FROM message_log WHERE template_id = ${id} AND status = 'agendada'`;
+  } else {
+    await sql`INSERT INTO message_templates ${sql({ ...data, sort: 99 })}`;
+  }
+  await planMessages();
+  revalidatePath("/central/mensagens");
+  back("/central/mensagens?v=modelos", "Modelo salvo.");
+}
+
+/* ——— Avaliações ——— */
+
+export async function createReview(fd: FormData) {
+  await requireUser("avaliacoes");
+  const text = str(fd.get("text"));
+  if (!text) back("/central/avaliacoes", "Cole o texto da avaliação.", "erro");
+  const rid = num(fd.get("reservation_id"));
+  const sql = db();
+  let unit_id = num(fd.get("unit_id"));
+  let guest = str(fd.get("guest_name"));
+  const rating = num(fd.get("rating"));
+  if (rid) {
+    const [r] = await sql`SELECT unit_id, guest_name FROM reservations WHERE id = ${rid}`;
+    if (r) {
+      unit_id = unit_id ?? r.unit_id;
+      guest = guest ?? r.guest_name;
+      if (rating) await sql`UPDATE reservations SET rating = ${rating} WHERE id = ${rid}`;
+    }
+  }
+  const [row] = await sql`INSERT INTO reviews (reservation_id, unit_id, channel, guest_name, rating, text, review_date)
+    VALUES (${rid}, ${unit_id}, ${str(fd.get("channel")) ?? "airbnb"}, ${guest}, ${rating}, ${text}, ${str(fd.get("review_date")) ?? today()})
+    RETURNING id`;
+  revalidatePath("/central", "layout");
+  back(`/central/avaliacoes#r${row.id}`, "Avaliação registrada.");
+}
+
+export async function draftReviewResponse(fd: FormData) {
+  await requireUser("avaliacoes");
+  const id = num(fd.get("id"));
+  if (!aiReady()) back("/central/avaliacoes", "Configure a chave da IA (AI_API_KEY) no servidor para gerar respostas.", "erro");
+  const [r] = await db()`SELECT rv.*, u.code FROM reviews rv LEFT JOIN units u ON u.id = rv.unit_id WHERE rv.id = ${id}`;
+  if (!r) return;
+  try {
+    const text = await ask(
+      VOICE +
+        "\nEscreva a resposta pública do anfitrião a uma avaliação. Até 80 palavras. Agradeça pelo nome, reconheça o ponto principal e, se houver crítica, diga o que foi ou será ajustado sem prometer o que não foi informado. Quem lê é o próximo hóspede. Responda no idioma da avaliação. Devolva só o texto da resposta.",
+      `Hóspede: ${r.guest_name ?? "não informado"}\nNota: ${r.rating ?? "não informada"}\nAvaliação:\n${r.text}`,
+    );
+    await db()`UPDATE reviews SET response = ${text} WHERE id = ${id}`;
+  } catch (e) {
+    back("/central/avaliacoes", `A IA não respondeu: ${e instanceof Error ? e.message : e}`, "erro");
+  }
+  revalidatePath("/central/avaliacoes");
+  back(`/central/avaliacoes#r${id}`, "Resposta sugerida. Revise antes de publicar.");
+}
+
+export async function saveReviewResponse(fd: FormData) {
+  await requireUser("avaliacoes");
+  const id = num(fd.get("id"));
+  await db()`UPDATE reviews SET response = ${str(fd.get("response"))}, responded = ${fd.get("responded") === "on"} WHERE id = ${id}`;
+  revalidatePath("/central", "layout");
+  back(`/central/avaliacoes#r${id}`, "Resposta salva.");
+}
+
+/* ——— Preços ——— */
+
+export async function savePriceEvent(fd: FormData) {
+  await requireUser("precos");
+  const name = str(fd.get("name"));
+  const from = str(fd.get("date_from"));
+  const to = str(fd.get("date_to")) ?? from;
+  let factor = num(fd.get("factor")) ?? 1.2;
+  if (factor > 5) factor = 1 + factor / 100; // aceita "30" como +30%
+  if (!name || !from || !to || to < from) back("/central/precos", "Informe nome e datas do evento.", "erro");
+  await db()`INSERT INTO price_events (name, date_from, date_to, factor) VALUES (${name}, ${from}, ${to}, ${factor})`;
+  revalidatePath("/central/precos");
+  back("/central/precos", "Evento incluído.");
+}
+
+export async function deletePriceEvent(fd: FormData) {
+  await requireUser("precos");
+  await db()`DELETE FROM price_events WHERE id = ${num(fd.get("id"))}`;
+  revalidatePath("/central/precos");
+}
+
+/* ——— Resumo com IA ——— */
+
+export async function aiDailySummary() {
+  await requireUser("painel");
+  if (!aiReady()) back("/central", "Configure a chave da IA (AI_API_KEY) no servidor para gerar o resumo.", "erro");
+  const sql = db();
+  const d = today();
+  const [arr, dep, cln, tk, lds, rv] = await Promise.all([
+    sql`SELECT u.code, r.guest_name, r.portaria_ok FROM reservations r JOIN units u ON u.id = r.unit_id WHERE r.check_in = ${d} AND r.status='confirmada' AND r.kind='reserva'`,
+    sql`SELECT u.code FROM reservations r JOIN units u ON u.id = r.unit_id WHERE r.check_out = ${d} AND r.status='confirmada' AND r.kind='reserva'`,
+    sql`SELECT u.code, c.type, c.status FROM cleanings c JOIN units u ON u.id = c.unit_id WHERE c.date = ${d} AND c.status <> 'cancelada'`,
+    sql`SELECT u.code, t.title, t.priority, t.due_at < now() AS late FROM tickets t LEFT JOIN units u ON u.id = t.unit_id WHERE t.status <> 'resolvida'`,
+    sql`SELECT count(*)::int AS n FROM leads WHERE status = 'novo'`,
+    sql`SELECT count(*)::int AS n FROM reviews WHERE NOT responded`,
+  ]);
+  const m = await monthResults(d);
+  const facts = JSON.stringify({
+    data: fmtShort(d),
+    entradas: arr, saidas: dep, limpezas: cln, ocorrencias_abertas: tk,
+    contatos_novos: lds[0].n, avaliacoes_sem_resposta: rv[0].n,
+    mes: { ocupacao: Math.round(m.totals.occupancy * 100) + "%", diaria_media: Math.round(m.totals.adr), resultado: Math.round(m.totals.result) },
+  });
+  try {
+    const text = await ask(
+      VOICE + "\nVocê prepara o resumo operacional da manhã para o gestor. Máximo de 120 palavras. Comece pelo que exige ação hoje (virada de unidade, portaria pendente, ocorrência atrasada), depois os números do mês em uma frase. Use tópicos curtos. Não invente nada além dos dados.",
+      facts,
+      400,
+    );
+    await sql`INSERT INTO settings (key, value) VALUES ('ai_summary', ${JSON.stringify({ at: new Date().toISOString(), text })})
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`;
+  } catch (e) {
+    back("/central", `A IA não respondeu: ${e instanceof Error ? e.message : e}`, "erro");
+  }
+  revalidatePath("/central");
+  back("/central", "Resumo atualizado.");
 }

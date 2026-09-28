@@ -21,12 +21,16 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     SELECT
       (SELECT count(*) FROM tickets WHERE status <> 'resolvida' AND due_at < now())::int AS overdue,
       (SELECT count(*) FROM leads WHERE status = 'novo')::int AS leads,
-      (SELECT count(*) FROM cleanings WHERE date = ${today()} AND status IN ('pendente','em_andamento'))::int AS cleanings`;
+      (SELECT count(*) FROM cleanings WHERE date = ${today()} AND status IN ('pendente','em_andamento'))::int AS cleanings,
+      (SELECT count(*) FROM message_log WHERE status IN ('manual','falhou'))::int AS msgs,
+      (SELECT count(*) FROM reviews WHERE NOT responded)::int AS reviews`;
 
   const badges: Record<string, number> = {
     manutencao: counts.overdue,
     contatos: counts.leads,
     limpeza: counts.cleanings,
+    mensagens: counts.msgs,
+    avaliacoes: counts.reviews,
   };
   const items: NavItem[] = MODULES.filter((m) => m.roles.includes(user.role)).map((m) => ({
     href: m.href,

@@ -1,5 +1,7 @@
 import { requireUser } from "@/lib/auth";
 import { getSettings } from "@/lib/util";
+import { evolutionReady } from "@/lib/messages";
+import { aiReady } from "@/lib/ai";
 import { Flash } from "@/components/ui";
 import { saveSettings } from "../../actions";
 
@@ -37,6 +39,31 @@ export default async function Configuracoes({ searchParams }: { searchParams: Pr
           <div className="panel-body form">
             <div className="field"><label htmlFor="airbnb_url">Página no Airbnb</label><input id="airbnb_url" name="airbnb_url" defaultValue={s.airbnb_url} placeholder="https://www.airbnb.com.br/users/show/…" /><small>Perfil de anfitrião ou anúncio principal. Aparece no botão “Reservar no Airbnb” do site.</small></div>
             <div className="field"><label htmlFor="booking_url">Página no Booking</label><input id="booking_url" name="booking_url" defaultValue={s.booking_url} /></div>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-head"><h2>Mensagens automáticas</h2>{evolutionReady() ? <span className="pill good">WhatsApp conectado</span> : <span className="pill warn">WhatsApp não configurado</span>}</div>
+          <div className="panel-body form">
+            <label className="check"><input type="checkbox" name="auto_messages" defaultChecked={s.auto_messages === "on"} /> Enviar sozinho pelo WhatsApp da central na hora marcada</label>
+            <small className="faint">
+              {evolutionReady()
+                ? "Mensagens com todos os dados preenchidos saem sozinhas. As que tiverem campo faltando vão para a fila de envio manual."
+                : "Para enviar sozinho, configure EVOLUTION_URL, EVOLUTION_API_KEY e EVOLUTION_INSTANCE no servidor. Enquanto isso, tudo fica na fila para envio com um toque."}
+            </small>
+            <small className="faint">IA para avaliações e resumo do dia: {aiReady() ? "ligada" : "configure AI_API_KEY no servidor"}.</small>
+          </div>
+        </section>
+
+        <section className="panel">
+          <div className="panel-head"><h2>Preço sugerido</h2></div>
+          <div className="panel-body form">
+            <div className="grid-4">
+              <div className="field"><label htmlFor="default_price">Diária base (R$)</label><input id="default_price" name="default_price" inputMode="decimal" defaultValue={s.default_price?.replace(".", ",")} /></div>
+              <div className="field"><label htmlFor="default_min_price">Diária mínima (R$)</label><input id="default_min_price" name="default_min_price" inputMode="decimal" defaultValue={s.default_min_price?.replace(".", ",")} /></div>
+              <div className="field"><label htmlFor="weekend_factor">Fator sexta e sábado</label><input id="weekend_factor" name="weekend_factor" inputMode="decimal" defaultValue={s.weekend_factor?.replace(".", ",")} /><small>1,10 = +10%</small></div>
+              <div className="field"><label htmlFor="weekday_factor">Fator dias úteis</label><input id="weekday_factor" name="weekday_factor" inputMode="decimal" defaultValue={s.weekday_factor?.replace(".", ",")} /></div>
+            </div>
           </div>
         </section>
 
